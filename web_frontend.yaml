@@ -1,0 +1,215 @@
+#cloud-config
+
+apt_update: true
+
+#apt_upgrade: true
+
+packages:
+ - apache2-mpm-prefork
+ - php5
+ - php5-mysql
+ - libapache2-mod-php5
+ - curl
+ - postfix
+ - mlocate
+ - python-pip
+ - python-dev
+ - jq
+
+configapache:
+ - &config_apache |
+   public_hostname=$(curl -s http://169.254.169.254/latest/meta-data/public-hostname)
+   public_ipv4=$(curl -s http://169.254.169.254/latest/meta-data/local-ipv4)
+   cat > /etc/apache2/sites-available/$public_hostname.conf <<EOF
+   <VirtualHost *:80>
+       UseCanonicalName off
+       Options All
+       ServerAdmin webmaster@localhost
+       ServerName $public_hostname
+       ServerAlias $public_ipv4
+
+       VirtualDocumentRoot /var/www/${public_hostname}
+       RewriteEngine on
+       RewriteRule ^/wp-uploads/(.*)$ /var/www/wp-uploads/%{HTTP_HOST}/\$1
+
+       ErrorLog \${APACHE_LOG_DIR}/wordpress-error.log
+       LogLevel warn
+       CustomLog \${APACHE_LOG_DIR}/wordpress-access.log combined
+   </VirtualHost>
+   EOF
+   a2enmod rewrite vhost_alias
+   a2dissite 000-default
+   a2ensite ${public_hostname}
+   /etc/init.d/apache2 restart
+
+#configpostfix:
+# - &config_postfix |
+#   public_hostname=$(curl -s http://169.254.169.254/latest/meta-data/public-hostname)
+#   postconf -e myhostname=${public_hostname}
+#   postconf -e mydestination=${public_hostname},localhost
+#   echo $public_hostname > /etc/mailname
+#   postfix reload
+
+configwordpress:
+ - &config_wordpress |
+   public_hostname=$(curl -s http://169.254.169.254/latest/meta-data/public-hostname)
+   mysql_ip=$(curl -s http://169.254.169.254/openstack/latest/meta_data.json | jq .meta.mysql_ip | tr -d '"')
+   wget http://wordpress.org/latest.tar.gz -O /tmp/latest.tar.gz
+   #mkdir /var/www/$public_hostname
+   tar zxvf /tmp/latest.tar.gz -C /var/www/
+   mv /var/www/wordpress /var/www/${public_hostname}
+   echo "<?php" > /var/www/${public_hostname}/wp-config.php
+   curl -s https://api.wordpress.org/secret-key/1.1/salt/ >> /var/www/${public_hostname}/wp-config.php
+   cat >> /var/www/${public_hostname}/wp-config.php <<EOF
+
+   define('DB_NAME', 'wordpress');
+   define('DB_USER', 'wordpress');
+   define('DB_PASSWORD', 'StrongPassword');
+   define('DB_HOST', '$mysql_ip');
+
+   \$table_prefix  = 'wp_';
+   define('WP_DEBUG', false);
+   if ( !defined('ABSPATH') )
+       define('ABSPATH', dirname(__FILE__) . '/');
+   require_once(ABSPATH . 'wp-settings.php');
+   EOF
+   mkdir /var/www/${public_hostname}/wp-content/uploads
+   chown -R www-data:www-data /var/www/${public_hostname}
+
+configurevrackinterface:
+- &config_vRack_interface |
+   private_ip=$(curl -s http://169.254.169.254/openstack/latest/meta_data.json | jq .meta.private_ip | tr -d '"')
+   cat >> /etc/network/interfaces <<EOF
+
+   auto eth1
+   iface eth1 inet static
+       address ${private_ip}
+       netmask 255.255.255.0
+   EOF
+   service networking restart
+
+
+############################
+# Setup IPLB auto add/remove
+############################
+
+write_files:
+ # Systemd service
+ - content: |
+       [Unit]
+       Description=Subscribe to the IPLB at OVH with the local public IP on eth0
+       Wants=cloud-init.service
+       
+       [Service]
+       Type=oneshot
+       RemainAfterExit=yes
+       ExecStart=/usr/bin/python /root/ovh-add-in-iplb.py
+       ExecStop=/usr/bin/python /root/ovh-del-in-iplb.py
+       
+       [Install]
+       WantedBy=multi-user.target
+   path: /etc/systemd/system/ovh-iplb-subscription.service
+   owner: root:root
+   permissions: '0644'
+
+ # script to REMOVE instance from iplb farm
+ - content: |
+       #!/usr/bin/python
+       import ovh
+       from netifaces import interfaces, ifaddresses, AF_INET
+       client = ovh.Client(config_file='/etc/ovh/conf')
+       params = {}
+       params['address'] = ifaddresses('eth0').setdefault(AF_INET, [{'addr':'No IP addr'}] )[0]['addr']
+       result = client.get('/ipLoadbalancing/--IPLB--/http/farm/--FARM--/server', **params)
+       _id = result[0]
+       params = {}
+       client.delete('/ipLoadbalancing/--IPLB--/http/farm/--FARM--/server/{}'.format(_id))
+       result = client.post('/ipLoadbalancing/--IPLB--/refresh', **params)
+
+   path: /root/ovh-del-in-iplb.py
+   owner: root:root
+   permissions: '0755'
+
+# script to ADD instance to iplb farm
+ - content: |
+       import ovh
+       from netifaces import interfaces, ifaddresses, AF_INET
+       client = ovh.Client(config_file='/etc/ovh/conf')
+       params = {}
+       params['address'] = ifaddresses('eth0').setdefault(AF_INET, [{'addr':'No IP addr'}] )[0]['addr']
+       params['status'] = 'active'
+       params['probe'] = 'true'
+       result = client.post('/ipLoadbalancing/--IPLB--/http/farm/--FARM--/server', **params)
+       params = {}
+       params['zone'] = 'rbx'
+       result = client.post('/ipLoadbalancing/--IPLB--/refresh', **params)
+
+   path: /root/ovh-add-in-iplb.py
+   owner: root:root
+   permissions: '0755'
+
+
+configureIPLB:
+ - &config_iplb |
+   
+   iplb=$(curl -s http://169.254.169.254/openstack/latest/meta_data.json | jq .meta.iplb | sed s'/\"//g')
+   application_key=$(curl -s http://169.254.169.254/openstack/latest/meta_data.json | jq .meta.application_key | sed s'/\"//g')
+   application_secret=$(curl -s http://169.254.169.254/openstack/latest/meta_data.json | jq .meta.application_secret| sed s'/\"//g')
+   consumer_key=$(curl -s http://169.254.169.254/openstack/latest/meta_data.json | jq .meta.consumer_key | sed s'/\"//g')
+
+   # prep ovh config file
+   mkdir /etc/ovh
+   cat > /etc/ovh/conf <<EOF
+   [default]
+   endpoint=ovh-eu
+    
+   [ovh-eu]
+   application_key=$application_key
+   application_secret=$application_secret
+   consumer_key=$consumer_key
+   EOF
+
+   # install requirements
+   pip install ovh
+   pip install netifaces
+
+   # populate template variables in add/remove scripts
+   iplb=$(curl -s http://169.254.169.254/openstack/latest/meta_data.json | jq .meta.iplb | sed s'/\"//g')
+   farm=$(curl -s http://169.254.169.254/openstack/latest/meta_data.json | jq .meta.farm | sed s'/\"//g')
+   sed -i -re "s/--IPLB--/$iplb/g" /root/ovh-del-in-iplb.py /root/ovh-add-in-iplb.py
+   sed -i -re "s/--FARM--/$farm/g" /root/ovh-del-in-iplb.py /root/ovh-add-in-iplb.py
+
+   # enable services
+   systemctl enable ovh-iplb-subscription.service
+   systemctl start ovh-iplb-subscription.service
+   
+configureSwift:
+  - &config_swift |
+    public_hostname=$(curl -s http://169.254.169.254/latest/meta-data/public-hostname)
+    cdn_url=$(curl -s http://169.254.169.254/openstack/latest/meta_data.json | jq .meta.cdn_url | sed s'/\"//g')
+
+    # Add custom wordpress function to handle our swift media url
+    cat > /var/www/${public_hostname}/wp-content/plugins/demo-custom-functions.php <<EOF
+    <?php
+    /**
+     * Plugin Name: Custom functions
+     * Description: Very Basic custom plugin to add functions.
+     * Author: Charles Vaillancourt
+     * Version: 0.1.0
+     */
+
+    function my_cdn_upload_url() {
+        return '${cdn_url}';
+    }
+    add_filter( 'pre_option_upload_url_path', 'my_cdn_upload_url' );
+    EOF
+
+
+
+runcmd:
+ #- [ sh, -c, *config_postfix ]
+ - [ sh, -c, *config_wordpress ]
+ - [ sh, -c, *config_apache ]
+ - [ sh, -c, *config_vRack_interface ]
+ - [ sh, -c, *config_iplb ]
+ - touch /tmp/done

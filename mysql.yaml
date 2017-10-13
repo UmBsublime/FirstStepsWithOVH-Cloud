@@ -1,0 +1,79 @@
+#cloud-config
+
+apt_update: true
+
+packages:
+ - curl
+ - mysql-server
+ - iptables-persistent
+ - jq
+
+configmysql:
+ - &config_mysql |
+   public_hostname=$(curl -s http://169.254.169.254/latest/meta-data/public-hostname)
+   public_ip=$(curl -s http://169.254.169.254/latest/meta-data/local-ipv4)
+   /etc/init.d/mysql restart
+   mysql -e "CREATE DATABASE wordpress;"
+   mysql -e "CREATE USER 'wordpress'@'localhost' IDENTIFIED BY 'StrongPassword';"
+   mysql -e "CREATE USER 'wordpress'@'%' IDENTIFIED BY 'StrongPassword';"
+   mysql -e "GRANT ALL PRIVILEGES ON wordpress.* TO 'wordpress'@'localhost';"
+   mysql -e "GRANT ALL PRIVILEGES ON wordpress.* TO 'wordpress'@'%';"
+   mysql -e "FLUSH PRIVILEGES;"
+
+configurefirewall:
+- &config_firewall |
+   # IPv4
+   iptables -P INPUT DROP
+   iptables -P OUTPUT DROP
+   iptables -A INPUT -i lo -j ACCEPT
+   iptables -A INPUT -i eth0 -p tcp -m tcp --dport 22 -j ACCEPT
+   iptables -A INPUT -i eth1 -p tcp -m tcp --dport 3306 -j ACCEPT
+   iptables -A INPUT -i eth1 -p icmp -j ACCEPT
+   iptables -A OUTPUT -o lo -j ACCEPT
+   iptables -A OUTPUT -o eth0 -p tcp --sport 22 -m state --state ESTABLISHED -j ACCEPT  
+   iptables -A OUTPUT -o eth1 -p tcp --sport 3306 -m state --state ESTABLISHED -j ACCEPT
+   iptables -A OUTPUT -o eth1 -p icmp -j ACCEPT
+   
+   # IPv6
+   ip6tables -P INPUT DROP
+   ip6tables -P OUTPUT DROP
+   ip6tables -A INPUT -i lo -j ACCEPT
+   #ip6tables -A INPUT -i eth0 -p tcp -m tcp --dport 22 -j ACCEPT
+   #ip6tables -A INPUT -i eth1 -p tcp -m tcp --dport 3306 -j ACCEPT
+   #ip6tables -A INPUT -i eth1 -p icmp -j ACCEPT
+   ip6tables -A OUTPUT -o lo -j ACCEPT
+   #ip6tables -A OUTPUT -o eth0 -p tcp --sport 22 -m state --state ESTABLISHED -j ACCEPT  
+   #ip6tables -A OUTPUT -o eth1 -p tcp --sport 3306 -m state --state ESTABLISHED -j ACCEPT
+   #ip6tables -A OUTPUT -o eth1 -p icmp -j ACCEPT
+   
+   # Save config and enable persistency
+   iptables-save > /etc/iptables/rules.v4
+   ip6tables-save > /etc/iptables/rules.v6
+   systemctl enable netfilter-persistent
+   systemctl start netfilter-persistent
+
+configurevrackinterface:
+- &config_vRack_interface |
+   private_ip=$(curl -s http://169.254.169.254/openstack/latest/meta_data.json | jq .meta.private_ip | tr -d '"')
+   cat >> /etc/network/interfaces <<EOF
+
+   auto eth1
+   iface eth1 inet static
+       address ${private_ip}
+       netmask 255.255.255.0
+   EOF
+   service networking restart
+
+configuremysqlip:
+- &config_mysql_ip |
+   private_ip=$(curl -s http://169.254.169.254/openstack/latest/meta_data.json | jq .meta.private_ip | tr -d '"')
+   sed -i "s/127.0.0.1/${private_ip}/g" /etc/mysql/my.cnf
+   /etc/init.d/mysql restart
+
+runcmd:
+ - [ sh, -c, *config_mysql ]
+ - [ sh, -c, *config_vRack_interface ]
+ - [ sh, -c, *config_mysql_ip ]
+ - [ sh, -c, *config_firewall ]
+ - touch /tmp/done
+

@@ -72,3 +72,29 @@ for i in {1..5}; do ./add_server.sh web-0$1 <mysql private ip>; done
  - instance points to existing mysql instance
  - instance auto-adds itself to iplb
  - on instance deletion auto-removes itself from iplb
+
+
+## WHAT NEXT
+
+This demo is not fully fonctionnal and there are a few things we can add to make it fully fonctionnal.
+
+#### Make wordpress media read/write from object storage
+
+This demo does not take into acount media added into wordpress, only one of the web frontends will reveive it. To fix this you could write/use a wordpress plugin to offload media to Object Storage like the OVH PCS service which is OpenStack Swift.
+
+#### Configure everything will only scripts
+
+As seen in the "REQUIREMENTS" section, there are a few things that are assumed before using this demo. All of these can be done programaticaly.
+
+- Order and prepare IPLB
+- Create OVH API credentials
+- Add your PCI project to the vRack
+- Create the vRack network
+
+We can even think of adding new thing like using a domain, configuring it's DNS and making sure apache takes it into account
+
+#### Add more automation
+
+Both bash scripts in this repo are the "glue" to create the instances, but all this can be achieved with [terraform](https://www.terraform.io).
+
+You could also make a basic cloud-init files to simply install and configure orchestration tools like puppet/chef/ansible/salt and then deploy the actual application with them.

@@ -76,11 +76,11 @@ for i in {1..5}; do ./add_server.sh web-0$1 <mysql private ip>; done
 
 ## WHAT NEXT
 
-This demo is not fully fonctionnal and there are a few things we can add to make it fully fonctionnal.
+This demo is not fully fonctional and there are a few things we can add to make it fully fonctional.
 
 #### Make wordpress media read/write from object storage
 
-This demo does not take into acount media added into wordpress, only one of the web frontends will reveive it. To fix this you could write/use a wordpress plugin to offload media to Object Storage like the OVH PCS service which is OpenStack Swift.
+This demo does not take into acount media added into wordpress, only one of the web frontends will receive it. To fix this you could write/use a wordpress plugin to offload media to Object Storage like the OVH PCS service which is OpenStack Swift.
 
 #### Configure everything will only scripts
 

@@ -46,7 +46,7 @@ openstack server set --property consumer_key=${API_CONSUMER_KEY} ${INSTANCE_ID}
 echo "Adding IPLB variables as properties on the instance"
 openstack server set --property iplb=${IPLB_ID} ${INSTANCE_ID}
 openstack server set --property farm=${FARM_ID} ${INSTANCE_ID}
--
+
 PUBLIC_IP=$(openstack port list  --server ${INSTANCE_ID} --network "${EXT_NET_ID}" --format json | jq '.[] | .["Fixed IP Addresses"]'  | cut -d'\' -f2- | cut -d',' -f1 | cut -d'=' -f2 |  tr -d "'")
 echo "Public IP: ${PUBLIC_IP}"
 
